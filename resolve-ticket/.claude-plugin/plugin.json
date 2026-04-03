@@ -1,0 +1,8 @@
+{
+  "name": "resolve-ticket",
+  "description": "Analyze a ticket, implement the solution end-to-end, write tests, verify quality, and prepare a production-ready commit with PR",
+  "version": "1.0.0",
+  "author": {
+    "name": "Enterprise CMS Team"
+  }
+}
