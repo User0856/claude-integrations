@@ -2,9 +2,9 @@
 name: Integration Testing Standards
 description: Integration test patterns with Spring Boot Test, Testcontainers (MongoDB), REST API testing, and database verification for end-to-end workflow validation
 when_to_apply: When writing integration tests that verify component interactions, REST API behavior, or database operations with real infrastructure
-version: 1.0.0
+version: 2.0.0
 languages: Java, Kotlin
-globs: "src/test/**/*IntegrationTest.{java,kt}"
+globs: "src/integrationTest/**/*IntegrationTest.{java,kt}"
 alwaysApply: false
 ---
 
@@ -12,14 +12,15 @@ alwaysApply: false
 
 ## Overview
 
-Integration tests verify that components work together correctly with real infrastructure — a real MongoDB instance, Spring's dependency injection, HTTP request handling, and actual repository queries. Unlike unit tests that mock dependencies, integration tests boot the application context and exercise the full request-response cycle. This skill defines how to structure, configure, and write integration tests using Spring Boot Test and Testcontainers.
+Integration tests verify that components work together correctly with real infrastructure — a real MongoDB instance via Testcontainers, Spring's dependency injection, HTTP request handling via MockMvc, and actual repository queries. Unlike unit tests that mock dependencies, integration tests boot the application context and exercise the full request-response cycle.
 
 **Core principles:**
-- Test with real infrastructure, not mocks
-- Exercise the full HTTP request-response cycle
-- Clean database state between tests
-- Verify both API responses and database state
-- Name tests to describe operation, scenario, and expected result
+- Test with real infrastructure via Testcontainers, not mocks
+- Use MockMvc with @AutoConfigureMockMvc to test the HTTP layer without a real server
+- Share a single MongoDB container across all test classes via a static singleton
+- Build request JSON manually (not via ObjectMapper) to test the actual API contract
+- Clean database state between tests by dropping all collections
+- Verify both API responses (via jsonPath) and database state (via MongoTemplate)
 
 ## When to Apply This Skill
 
@@ -32,15 +33,18 @@ Integration tests verify that components work together correctly with real infra
 ## Quick Reference
 
 | Rule | Requirement | Level | Key Point |
-|------|------------|-------|-----------|
-| IT01 | Reusable base class | MUST | @SpringBootTest, @Testcontainers, MongoDBContainer |
-| IT02 | Clean up between tests | MUST | @BeforeEach drops all collections |
-| IT03 | Test full HTTP cycle | MUST | Real HTTP requests via TestRestTemplate, verify status + body |
-| IT04 | Test error responses | MUST | Verify proper status codes for invalid requests |
-| IT05 | Test CRUD end-to-end | SHOULD | Create, read, update, delete lifecycle |
-| IT06 | Verify database state | SHOULD | Use MongoTemplate to check stored documents directly |
-| IT07 | Test multi-step workflows | SHOULD | Verify state at each step of business workflows |
-| IT08 | Follow naming convention | MUST | test_{operation}_{scenario}_{expectedResult} |
+|------|-----------|-------|-----------|
+| IT01 | Use static singleton container | MUST | Start MongoDB once in static block, NOT with @Container |
+| IT02 | Use @ServiceConnection | MUST | Auto-configures spring.data.mongodb.uri, replaces @DynamicPropertySource |
+| IT03 | Use MockMvc, not TestRestTemplate | MUST | @AutoConfigureMockMvc, no RANDOM_PORT needed |
+| IT04 | Clean up between tests | MUST | @BeforeEach drops all collections via MongoTemplate |
+| IT05 | Build JSON manually for requests | MUST | Raw JSON strings or text blocks, avoid ObjectMapper for request bodies |
+| IT06 | Use jsonPath for response verification | MUST | Hamcrest matchers with $.field paths |
+| IT07 | Test error responses with status and body | MUST | Verify status code, error message content |
+| IT08 | Test CRUD end-to-end | SHOULD | Create, read, update, delete lifecycle |
+| IT09 | Verify database state directly | SHOULD | MongoTemplate.findById after API calls |
+| IT10 | Test multi-step workflows | SHOULD | State at each step of business workflows |
+| IT11 | Follow naming convention | MUST | test_{operation}_{scenario}_{expectedResult} |
 
 ---
 
@@ -51,78 +55,109 @@ Integration tests verify that components work together correctly with real infra
 | Component | Purpose |
 |-----------|---------|
 | `@SpringBootTest` | Boots full application context |
-| `@Testcontainers` | Manages Docker containers for test infrastructure |
-| `MongoDBContainer` | Real MongoDB instance via Testcontainers |
-| `TestRestTemplate` / `WebTestClient` | HTTP client for REST API testing |
-| `@DynamicPropertySource` | Injects container connection details into Spring config |
+| `@AutoConfigureMockMvc` | Configures MockMvc for HTTP testing without a real server |
+| `@Testcontainers` | Enables Testcontainers JUnit 5 extension |
+| `MongoDBContainer` (static singleton) | Real MongoDB instance shared across all test classes |
+| `@ServiceConnection` | Auto-configures `spring.data.mongodb.uri` from the container |
+| `MockMvc` | Performs HTTP requests against the application |
+| `MongoTemplate` | Direct database access for verification and cleanup |
+| `ObjectMapper` (tools.jackson) | Reads JSON responses, extracts IDs from response bodies |
 
 ### Standard Directory Structure
 
 ```
-src/test/java/com/enterprise/cms/
-    integration/
-        BaseIntegrationTest.java        # Abstract base class
-        ClientControllerIntegrationTest.java
-        ContractLifecycleIntegrationTest.java
-        InvoiceIntegrationTest.java
+src/integrationTest/java/com/enterprise/cms/{service}/integration/
+    BaseIntegrationTest.java                    # Abstract base class — ONE per service
+    ClientControllerIntegrationTest.java        # Tests for client endpoints
+    ContactControllerIntegrationTest.java       # Tests for contact endpoints
+    {Feature}IntegrationTest.java               # Tests for new feature endpoints
 ```
+
+Integration tests live in `src/integrationTest/java` (separate source set configured in `build.gradle`), NOT in `src/test/java`.
 
 ---
 
 ## Base Integration Test
 
-### Rule IT01: Create a Reusable Base Class
+### Rule IT01: Use a Static Singleton Container (NOT @Container)
 
 **Requirement Level**: MUST
 
-All integration tests must extend a base class that manages the MongoDB container lifecycle:
+The MongoDB container must be started ONCE in a `static {}` block and shared across ALL test classes. **Do NOT use `@Container`** — it creates one container per test class, causing port conflicts when Spring caches the application context.
+
+### Rule IT02: Use @ServiceConnection (NOT @DynamicPropertySource)
+
+**Requirement Level**: MUST
+
+Spring Boot 3.1+ / 4.x provides `@ServiceConnection` which auto-configures `spring.data.mongodb.uri` from the Testcontainers container. **Do NOT use `@DynamicPropertySource`** — it's the old approach and doesn't integrate with context caching.
+
+### Rule IT03: Use MockMvc (NOT TestRestTemplate)
+
+**Requirement Level**: MUST
+
+Use `@AutoConfigureMockMvc` with `MockMvc`. **Do NOT use `TestRestTemplate`** with `RANDOM_PORT` — it requires a real server, is slower, and error responses are harder to inspect.
 
 ```java
-package com.enterprise.cms.integration;
+package com.enterprise.cms.client.integration;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.MongoDBContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+import java.time.Duration;
+
+@SpringBootTest
+@AutoConfigureMockMvc
 @Testcontainers
 public abstract class BaseIntegrationTest {
 
-    @Container
+    @ServiceConnection
     static MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0")
-            .withReuse(true);
+            .withStartupTimeout(Duration.ofMinutes(3));
+
+    static {
+        mongoDBContainer.start();
+    }
 
     @Autowired
-    protected TestRestTemplate restTemplate;
+    protected MockMvc mockMvc;
 
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.mongodb.uri", mongoDBContainer::getReplicaSetUrl);
+    @Autowired
+    protected MongoTemplate mongoTemplate;
+
+    @BeforeEach
+    void cleanDatabase() {
+        mongoTemplate.getCollectionNames()
+                .forEach(name -> mongoTemplate.dropCollection(name));
     }
 }
 ```
 
-**Key decisions:**
-- `RANDOM_PORT` avoids port conflicts when running tests in parallel
-- `withReuse(true)` keeps the container alive across test classes for speed
-- `@DynamicPropertySource` injects the real MongoDB URI into Spring config
-- `static` container ensures one instance per test class
+**Why this works:**
+- `static {}` block starts the container once, before any test class loads
+- `@ServiceConnection` on the static field auto-configures Spring to connect to this container
+- `@SpringBootTest` (without `RANDOM_PORT`) uses a mock servlet environment — fast, no port conflicts
+- `@AutoConfigureMockMvc` provides `MockMvc` for HTTP testing
+- `MongoTemplate` is injected for direct database access (cleanup + verification)
+- `@BeforeEach cleanDatabase()` drops all collections so each test starts clean
 
-### Rule IT02: Clean Up Between Tests
+**Common mistakes that cause MongoTimeoutException:**
+- Using `@Container` instead of manual `static {}` start — when multiple test classes run, each class tries to manage the container lifecycle independently, causing the cached Spring context to lose its MongoDB connection
+- Using `@DynamicPropertySource` instead of `@ServiceConnection` — the property may not propagate correctly to cached contexts
+
+### Rule IT04: Clean Up Between Tests
 
 **Requirement Level**: MUST
 
-Each test must start with a clean database state:
+Each test must start with a clean database. The base class handles this via `@BeforeEach`:
 
 ```java
-@Autowired
-private MongoTemplate mongoTemplate;
-
 @BeforeEach
 void cleanDatabase() {
     mongoTemplate.getCollectionNames()
@@ -130,157 +165,244 @@ void cleanDatabase() {
 }
 ```
 
-Or use `@DirtiesContext` per class (slower but simpler for small test suites).
+This drops ALL collections — simple and reliable. Do NOT use `@DirtiesContext` (too slow, restarts the entire Spring context).
 
 ---
 
-## REST API Testing
+## Writing Request JSON
 
-### Rule IT03: Test Full HTTP Request-Response Cycle
-
-**Requirement Level**: MUST
-
-Integration tests must go through the HTTP layer — send real HTTP requests and verify responses including status codes, headers, and body:
-
-```java
-@Test
-void test_createClient_validRequest_returns201WithBody() {
-    // Given
-    CreateClientRequest request = CreateClientRequest.builder()
-            .companyName("Acme Corporation")
-            .industry("Technology")
-            .annualRevenue(BigDecimal.valueOf(5000000))
-            .build();
-
-    // When
-    ResponseEntity<ClientResponse> response = restTemplate.postForEntity(
-            "/api/v1/clients", request, ClientResponse.class);
-
-    // Then
-    assertThat(response.getStatusCode(), is(HttpStatus.CREATED));
-    assertThat(response.getBody(), is(notNullValue()));
-    assertThat(response.getBody().getCompanyName(), is("Acme Corporation"));
-    assertThat(response.getBody().getIndustry(), is("Technology"));
-    assertThat(response.getBody().getId(), is(notNullValue()));
-}
-```
-
-### Rule IT04: Test Error Responses
+### Rule IT05: Build JSON Manually (NOT via ObjectMapper)
 
 **Requirement Level**: MUST
 
-Verify that invalid requests return proper error status codes:
+**Always use raw JSON strings (text blocks) for request bodies.** Do NOT serialize DTOs with `ObjectMapper.writeValueAsString()`.
 
+**Why:** Spring Boot 4.x uses Jackson 3.x (`tools.jackson`), which has different boolean serialization than Jackson 2.x. Specifically, Lombok's `boolean isPrimary` field generates getter `isPrimary()`, which Jackson serializes as JSON key `"primary"` (strips the "is" prefix). If you use ObjectMapper to serialize the DTO, the JSON key will be `"primary"`, but the API contract expects `"isPrimary"`. This mismatch causes `HttpMessageNotReadableException: Cannot map null into type boolean`.
+
+**Correct — raw JSON:**
 ```java
-@Test
-void test_createClient_missingRequiredFields_returns400() {
-    // Given
-    CreateClientRequest request = CreateClientRequest.builder()
-            .industry("Technology")  // companyName is missing
-            .build();
+String json = """
+        {
+            "firstName": "John",
+            "lastName": "Doe",
+            "email": "john@example.com",
+            "role": "TECHNICAL",
+            "isPrimary": true
+        }
+        """;
 
-    // When
-    ResponseEntity<ErrorResponse> response = restTemplate.postForEntity(
-            "/api/v1/clients", request, ErrorResponse.class);
+mockMvc.perform(post("/api/v1/clients/" + clientId + "/contacts")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json))
+        .andExpect(status().isCreated());
+```
 
-    // Then
-    assertThat(response.getStatusCode(), is(HttpStatus.BAD_REQUEST));
-    assertThat(response.getBody().getMessage(), containsString("companyName"));
-}
-
-@Test
-void test_getClient_nonExistentId_returns404() {
-    // When
-    ResponseEntity<ErrorResponse> response = restTemplate.getForEntity(
-            "/api/v1/clients/nonexistent-id", ErrorResponse.class);
-
-    // Then
-    assertThat(response.getStatusCode(), is(HttpStatus.NOT_FOUND));
+**Correct — parameterized helper method:**
+```java
+private String contactJson(String firstName, String lastName, String email,
+                           String role, boolean isPrimary) {
+    return """
+            {
+                "firstName": "%s",
+                "lastName": "%s",
+                "email": "%s",
+                "role": "%s",
+                "isPrimary": %s
+            }
+            """.formatted(firstName, lastName, email, role, isPrimary);
 }
 ```
 
-### Rule IT05: Test CRUD Operations End-to-End
+**WRONG — ObjectMapper serialization (causes boolean field issues):**
+```java
+// DO NOT DO THIS — Jackson 3.x serializes boolean isPrimary as "primary"
+CreateContactRequest request = CreateContactRequest.builder()
+        .firstName("John").lastName("Doe").isPrimary(true).build();
+mockMvc.perform(post(url)
+        .content(objectMapper.writeValueAsString(request)))  // WRONG
+```
+
+**Exception for DTOs WITHOUT boolean primitives:** If the DTO has no `boolean` fields (only `Boolean` wrapper or no booleans at all), ObjectMapper serialization is safe. For example, `CreateClientRequest` (no boolean fields) works fine with ObjectMapper. But always prefer raw JSON for consistency and to test the real API contract.
+
+**Reading responses IS safe with ObjectMapper:**
+```java
+// This is fine — reading response JSON to extract fields
+@Autowired
+private ObjectMapper objectMapper;
+
+String responseBody = mockMvc.perform(post("/api/v1/clients")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(clientJson("Acme Corp", "Technology", 5000000)))
+        .andReturn().getResponse().getContentAsString();
+
+String clientId = objectMapper.readTree(responseBody).get("id").asText();
+```
+
+**Boolean fields in responses:** When reading boolean fields from JSON responses via jsonPath, use the Jackson-serialized name (`"primary"`, not `"isPrimary"`):
+```java
+// Correct — Jackson serializes boolean isPrimary as "primary" in response
+.andExpect(jsonPath("$.primary", is(true)))
+
+// WRONG — field name doesn't match Jackson's serialization
+.andExpect(jsonPath("$.isPrimary", is(true)))
+```
+
+---
+
+## Response Verification
+
+### Rule IT06: Use jsonPath for Response Verification
+
+**Requirement Level**: MUST
+
+Use Spring's `jsonPath()` with Hamcrest matchers:
+
+```java
+mockMvc.perform(get("/api/v1/clients/" + clientId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.companyName", is("Acme Corp")))
+        .andExpect(jsonPath("$.status", is("PROSPECT")))
+        .andExpect(jsonPath("$.id", is(notNullValue())))
+        .andExpect(jsonPath("$.createdAt", is(notNullValue())));
+```
+
+**Common jsonPath patterns:**
+
+```java
+// Single field
+.andExpect(jsonPath("$.companyName", is("Acme Corp")))
+
+// Null check
+.andExpect(jsonPath("$.id", is(notNullValue())))
+
+// Array size
+.andExpect(jsonPath("$", hasSize(3)))
+
+// Array element
+.andExpect(jsonPath("$[0].companyName", is("First Corp")))
+
+// Nested field
+.andExpect(jsonPath("$.address.city", is("New York")))
+
+// Boolean (use Jackson-serialized name for Lombok boolean isPrimary)
+.andExpect(jsonPath("$.primary", is(true)))
+
+// String contains
+.andExpect(jsonPath("$.message", containsString("not found")))
+```
+
+**Required imports:**
+```java
+import static org.hamcrest.Matchers.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+```
+
+### Rule IT07: Test Error Responses
+
+**Requirement Level**: MUST
+
+Verify that invalid requests return proper HTTP status codes:
+
+```java
+// 400 — validation failure
+mockMvc.perform(post("/api/v1/clients")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+                { "industry": "Technology" }
+                """))  // missing required companyName
+        .andExpect(status().isBadRequest());
+
+// 404 — entity not found
+mockMvc.perform(get("/api/v1/clients/nonexistent-id"))
+        .andExpect(status().isNotFound());
+
+// 409 — duplicate entity
+mockMvc.perform(post("/api/v1/clients")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(clientJson("Same Name Corp", "Tech", 100000)))
+        .andExpect(status().isCreated());
+mockMvc.perform(post("/api/v1/clients")
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(clientJson("Same Name Corp", "Tech", 100000)))
+        .andExpect(status().isConflict());
+
+// 422 — business rule violation
+mockMvc.perform(delete("/api/v1/clients/" + clientId + "/contacts/" + primaryContactId))
+        .andExpect(status().isUnprocessableEntity());
+```
+
+---
+
+## CRUD and Workflow Tests
+
+### Rule IT08: Test CRUD Operations End-to-End
 
 **Requirement Level**: SHOULD
 
-Test the complete lifecycle: create → read → update → delete:
-
 ```java
 @Test
-void test_clientCrudLifecycle() {
+void test_clientCrudLifecycle() throws Exception {
     // CREATE
-    CreateClientRequest createRequest = CreateClientRequest.builder()
-            .companyName("Test Corp")
-            .industry("Finance")
-            .annualRevenue(BigDecimal.valueOf(1000000))
-            .build();
-    ResponseEntity<ClientResponse> createResponse = restTemplate.postForEntity(
-            "/api/v1/clients", createRequest, ClientResponse.class);
-    assertThat(createResponse.getStatusCode(), is(HttpStatus.CREATED));
-    String clientId = createResponse.getBody().getId();
+    String body = mockMvc.perform(post("/api/v1/clients")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(clientJson("Lifecycle Corp", "Technology", 5000000)))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.companyName", is("Lifecycle Corp")))
+            .andReturn().getResponse().getContentAsString();
+    String clientId = objectMapper.readTree(body).get("id").asText();
 
     // READ
-    ResponseEntity<ClientResponse> getResponse = restTemplate.getForEntity(
-            "/api/v1/clients/" + clientId, ClientResponse.class);
-    assertThat(getResponse.getStatusCode(), is(HttpStatus.OK));
-    assertThat(getResponse.getBody().getCompanyName(), is("Test Corp"));
+    mockMvc.perform(get("/api/v1/clients/" + clientId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.companyName", is("Lifecycle Corp")));
 
     // UPDATE
-    UpdateClientRequest updateRequest = UpdateClientRequest.builder()
-            .companyName("Updated Corp")
-            .build();
-    restTemplate.put("/api/v1/clients/" + clientId, updateRequest);
-    ResponseEntity<ClientResponse> updatedResponse = restTemplate.getForEntity(
-            "/api/v1/clients/" + clientId, ClientResponse.class);
-    assertThat(updatedResponse.getBody().getCompanyName(), is("Updated Corp"));
+    mockMvc.perform(put("/api/v1/clients/" + clientId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                            { "companyName": "Updated Corp", "industry": "Finance" }
+                            """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.companyName", is("Updated Corp")));
 
     // DELETE
-    restTemplate.delete("/api/v1/clients/" + clientId);
-    ResponseEntity<ErrorResponse> deletedResponse = restTemplate.getForEntity(
-            "/api/v1/clients/" + clientId, ErrorResponse.class);
-    assertThat(deletedResponse.getStatusCode(), is(HttpStatus.NOT_FOUND));
+    mockMvc.perform(delete("/api/v1/clients/" + clientId))
+            .andExpect(status().isNoContent());
+
+    // VERIFY DELETED
+    mockMvc.perform(get("/api/v1/clients/" + clientId))
+            .andExpect(status().isNotFound());
 }
 ```
 
----
-
-## Database Verification
-
-### Rule IT06: Verify Database State Directly
+### Rule IT09: Verify Database State Directly
 
 **Requirement Level**: SHOULD
 
 For complex operations, verify the database state directly using MongoTemplate:
 
 ```java
-@Autowired
-private MongoTemplate mongoTemplate;
-
 @Test
-void test_transitionStatus_updatesDocumentInDatabase() {
-    // Given — create a contract via API
-    // ... (POST to create contract, extract ID)
+void test_createClient_persistsFieldsToMongoDB() throws Exception {
+    String body = mockMvc.perform(post("/api/v1/clients")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(clientJson("Persistence Corp", "Technology", 5000000)))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+    String clientId = objectMapper.readTree(body).get("id").asText();
 
-    // When — transition status
-    restTemplate.postForEntity(
-            "/api/v1/contracts/" + contractId + "/transition",
-            new ContractTransitionRequest(ContractStatus.PENDING_APPROVAL),
-            ContractResponse.class);
-
-    // Then — verify directly in MongoDB
-    Contract stored = mongoTemplate.findById(contractId, Contract.class);
+    // Verify directly in MongoDB
+    Client stored = mongoTemplate.findById(clientId, Client.class);
     assertThat(stored, is(notNullValue()));
-    assertThat(stored.getStatus(), is(ContractStatus.PENDING_APPROVAL));
-    assertThat(stored.getStatusHistory(), hasSize(1));
-    assertThat(stored.getStatusHistory().get(0).getFromStatus(), is(ContractStatus.DRAFT));
+    assertThat(stored.getCompanyName(), is("Persistence Corp"));
+    assertThat(stored.getStatus(), is(ClientStatus.PROSPECT));
+    assertThat(stored.getCreatedAt(), is(notNullValue()));
+    assertThat(stored.getUpdatedAt(), is(notNullValue()));
 }
 ```
 
----
-
-## Workflow Testing
-
-### Rule IT07: Test Multi-Step Business Workflows
+### Rule IT10: Test Multi-Step Business Workflows
 
 **Requirement Level**: SHOULD
 
@@ -288,55 +410,70 @@ For features involving multiple API calls and state transitions:
 
 ```java
 @Test
-void test_contractLifecycle_draftToActiveToRenewal() {
-    // STEP 1: Create client
-    ResponseEntity<ClientResponse> clientResponse = restTemplate.postForEntity(
-            "/api/v1/clients",
-            CreateClientRequest.builder()
-                    .companyName("Lifecycle Corp").industry("Tech")
-                    .annualRevenue(BigDecimal.valueOf(1000000)).build(),
-            ClientResponse.class);
-    String clientId = clientResponse.getBody().getId();
+void test_contactPrimaryReassignment_workflow() throws Exception {
+    String clientId = createClient("Workflow Corp");
 
-    // STEP 2: Create contract in DRAFT
-    ResponseEntity<ContractResponse> contractResponse = restTemplate.postForEntity(
-            "/api/v1/contracts",
-            CreateContractRequest.builder()
-                    .clientId(clientId).contractNumber("CNT-LC-001")
-                    .value(BigDecimal.valueOf(50000)).currency("USD")
-                    .startDate(LocalDate.now()).endDate(LocalDate.now().plusYears(1))
-                    .build(),
-            ContractResponse.class);
-    String contractId = contractResponse.getBody().getId();
-    assertThat(contractResponse.getBody().getStatus(), is("DRAFT"));
+    // Step 1: Create first contact as primary
+    String body1 = createContact(clientId, "Alice", "Smith", "alice@test.com", true);
+    String contactId1 = extractId(body1);
 
-    // STEP 3: Transition DRAFT -> PENDING_APPROVAL
-    transition(contractId, ContractStatus.PENDING_APPROVAL, HttpStatus.OK);
+    // Step 2: Create second contact, not primary
+    String body2 = createContact(clientId, "Bob", "Jones", "bob@test.com", false);
+    String contactId2 = extractId(body2);
 
-    // STEP 4: Transition PENDING_APPROVAL -> ACTIVE
-    transition(contractId, ContractStatus.ACTIVE, HttpStatus.OK);
+    // Step 3: Reassign primary to second contact
+    mockMvc.perform(put("/api/v1/clients/" + clientId + "/contacts/" + contactId2 + "/primary"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.primary", is(true)));
 
-    // STEP 5: Transition ACTIVE -> RENEWAL
-    ResponseEntity<ContractResponse> renewalResponse =
-            transition(contractId, ContractStatus.RENEWAL, HttpStatus.OK);
-    assertThat(renewalResponse.getBody().getStatus(), is("RENEWAL"));
+    // Step 4: Verify first contact lost primary status
+    mockMvc.perform(get("/api/v1/clients/" + clientId + "/contacts/" + contactId1))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.primary", is(false)));
+}
+```
 
-    // STEP 6: Verify invalid transition is rejected
-    ResponseEntity<ErrorResponse> errorResponse = restTemplate.postForEntity(
-            "/api/v1/contracts/" + contractId + "/transition",
-            new ContractTransitionRequest(ContractStatus.DRAFT),
-            ErrorResponse.class);
-    assertThat(errorResponse.getStatusCode(), is(HttpStatus.CONFLICT));
+---
+
+## Helper Method Patterns
+
+Every integration test class should define helper methods for creating prerequisite entities:
+
+```java
+// Helper: create client via API and return its ID
+private String createClient(String companyName) throws Exception {
+    String body = mockMvc.perform(post("/api/v1/clients")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(clientJson(companyName, "Technology", 1000000)))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+    return objectMapper.readTree(body).get("id").asText();
 }
 
-private ResponseEntity<ContractResponse> transition(
-        String contractId, ContractStatus status, HttpStatus expectedStatus) {
-    ResponseEntity<ContractResponse> response = restTemplate.postForEntity(
-            "/api/v1/contracts/" + contractId + "/transition",
-            new ContractTransitionRequest(status),
-            ContractResponse.class);
-    assertThat(response.getStatusCode(), is(expectedStatus));
-    return response;
+// Helper: build client JSON (no boolean fields, ObjectMapper-safe but raw JSON preferred)
+private String clientJson(String companyName, String industry, long revenue) {
+    return """
+            {
+                "companyName": "%s",
+                "industry": "%s",
+                "annualRevenue": %d
+            }
+            """.formatted(companyName, industry, revenue);
+}
+
+// Helper: create contact via API and return the response body
+private String createContact(String clientId, String firstName, String lastName,
+                             String email, boolean isPrimary) throws Exception {
+    return mockMvc.perform(post("/api/v1/clients/" + clientId + "/contacts")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(contactJson(firstName, lastName, email, "TECHNICAL", isPrimary)))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+}
+
+// Helper: extract ID from JSON response body
+private String extractId(String responseBody) throws Exception {
+    return objectMapper.readTree(responseBody).get("id").asText();
 }
 ```
 
@@ -344,7 +481,7 @@ private ResponseEntity<ContractResponse> transition(
 
 ## Test Naming
 
-### Rule IT08: Follow Integration Test Naming Convention
+### Rule IT11: Follow Integration Test Naming Convention
 
 **Requirement Level**: MUST
 
@@ -352,11 +489,109 @@ Format: `test_{operation}_{scenario}_{expectedResult}`
 
 | Pattern | Example |
 |---------|---------|
-| API success | `test_createClient_validRequest_returns201WithBody` |
+| API success | `test_createClient_validRequest_returns201` |
 | API validation | `test_createClient_missingName_returns400` |
 | API not found | `test_getClient_nonExistentId_returns404` |
-| Workflow | `test_contractLifecycle_draftToActiveToRenewal` |
-| Database | `test_transitionStatus_updatesDocumentInDatabase` |
+| Duplicate | `test_createClient_duplicateName_returns409` |
+| Business rule | `test_deleteContact_primaryContact_returns422` |
+| Workflow | `test_contactPrimaryReassignment_workflow` |
+| Database | `test_createClient_persistsFieldsToMongoDB` |
+
+---
+
+## Build Configuration
+
+Integration tests require a separate source set in `build.gradle`:
+
+```groovy
+// Integration test source set
+sourceSets {
+    integrationTest {
+        java.srcDir 'src/integrationTest/java'
+        resources.srcDir 'src/integrationTest/resources'
+        compileClasspath += sourceSets.main.output + sourceSets.test.output
+        runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    integrationTestCompileOnly.extendsFrom testCompileOnly
+    integrationTestAnnotationProcessor.extendsFrom testAnnotationProcessor
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs integration tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter tasks.named('test')
+}
+```
+
+Key dependencies:
+```groovy
+testImplementation 'org.springframework.boot:spring-boot-starter-test'
+testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'  // Spring Boot 4.x name
+testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+testImplementation 'org.testcontainers:mongodb'
+testImplementation 'org.testcontainers:junit-jupiter'
+```
+
+**Spring Boot 4.x dependency names:** The web test starter is `spring-boot-starter-webmvc-test` (not `spring-boot-starter-test` alone). The web starter is `spring-boot-starter-webmvc` (not `spring-boot-starter-web`).
+
+---
+
+## Common Pitfalls and Fixes
+
+### MongoTimeoutException when running multiple test classes
+
+**Cause:** Using `@Container` annotation on the MongoDBContainer field. Each test class lifecycle-manages the container independently, but Spring caches the application context. When class B runs, Spring reuses the cached context that points to class A's container (which may have shut down).
+
+**Fix:** Remove `@Container`. Start the container once in a `static {}` block:
+```java
+@ServiceConnection
+static MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
+static { mongoDBContainer.start(); }
+```
+
+### HttpMessageNotReadableException: Cannot map null into type boolean
+
+**Cause:** Using `ObjectMapper.writeValueAsString()` to serialize a DTO that has Lombok `boolean isPrimary`. Jackson 3.x sees the getter `isPrimary()` and serializes as `"primary": true`. On deserialization, the controller expects `"isPrimary"` to set the field, doesn't find it, and tries to map null to the primitive boolean.
+
+**Fix:** Use raw JSON strings for request bodies:
+```java
+String json = """
+        { "firstName": "John", "lastName": "Doe", "isPrimary": true }
+        """;
+```
+
+### Tests pass individually but fail when run together
+
+**Cause:** Database not cleaned between tests, or test order dependency.
+
+**Fix:** Ensure `@BeforeEach cleanDatabase()` drops all collections. Never depend on data from another test.
+
+### @AutoConfigureMockMvc import not found
+
+**Cause:** In Spring Boot 4.x, the import changed from `org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc` to `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`.
+
+**Fix:** Use the correct import:
+```java
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+```
+
+### ObjectMapper import (Jackson 3.x)
+
+**Cause:** Spring Boot 4.x uses Jackson 3.x (`tools.jackson`), not Jackson 2.x (`com.fasterxml.jackson`).
+
+**Fix:** Use the correct import:
+```java
+import tools.jackson.databind.ObjectMapper;
+// NOT: import com.fasterxml.jackson.databind.ObjectMapper;
+```
 
 ---
 
@@ -364,18 +599,20 @@ Format: `test_{operation}_{scenario}_{expectedResult}`
 
 Before submitting integration tests, verify:
 
-- [ ] Test class extends `BaseIntegrationTest` (or equivalent)
-- [ ] `@SpringBootTest` with `RANDOM_PORT` is used
-- [ ] MongoDB Testcontainer is configured via `@DynamicPropertySource`
-- [ ] Database is cleaned between tests (`@BeforeEach`)
-- [ ] Tests go through the full HTTP layer (no direct service calls)
-- [ ] Success responses verify status code AND body content
-- [ ] Error responses verify status code AND error message
+- [ ] Test class extends `BaseIntegrationTest`
+- [ ] `BaseIntegrationTest` uses static singleton container (`static {}` block, NOT `@Container`)
+- [ ] `@ServiceConnection` on the container field (NOT `@DynamicPropertySource`)
+- [ ] `@AutoConfigureMockMvc` (NOT `TestRestTemplate` with `RANDOM_PORT`)
+- [ ] Database is cleaned between tests via `@BeforeEach`
+- [ ] Request JSON is built manually (raw strings), NOT via `ObjectMapper.writeValueAsString()`
+- [ ] Response boolean fields use Jackson-serialized names (`$.primary`, NOT `$.isPrimary`)
+- [ ] Success responses verify status code AND body content via jsonPath
+- [ ] Error responses verify status code (400, 404, 409, 422)
 - [ ] CRUD lifecycle is tested end-to-end for new entities
 - [ ] Multi-step workflows verify state at each step
-- [ ] Database state is verified directly for complex operations
 - [ ] Test names follow `test_{operation}_{scenario}_{result}` convention
-- [ ] No hardcoded ports or database URIs
+- [ ] All tests pass when run together (`./gradlew integrationTest`), not just individually
+- [ ] Correct imports for Spring Boot 4.x (`tools.jackson`, `boot.webmvc.test.autoconfigure`)
 
 ## References
 

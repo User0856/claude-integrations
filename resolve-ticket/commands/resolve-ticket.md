@@ -259,7 +259,7 @@ If tests fail:
 
 ## Phase 8: Integration Tests
 
-Apply the `integration-testing` skill.
+Apply the `integration-testing` skill. Read both `SKILL.md` AND `examples.md` for this skill — the examples contain exact working code patterns that MUST be followed.
 
 ### 8.1 Evaluate Need
 
@@ -273,31 +273,37 @@ Integration tests are OPTIONAL when:
 - Changes are purely to internal service logic already covered by unit tests
 - Only DTOs or mappers changed with no behavioral impact
 
-### 8.2 Write Integration Tests
+**If the ticket explicitly states that integration tests are not needed, skip this phase entirely.**
 
-If integration tests are needed:
-1. Create test class following `{ClassName}IntegrationTest` naming convention
-2. Extend the project's base integration test class (if one exists)
-3. Use `@SpringBootTest` with `@Testcontainers` for MongoDB
-4. Use `@DynamicPropertySource` to configure test MongoDB connection
-5. Test full request-response cycles through the REST API
-6. Verify database state after operations
-7. Test error responses and status codes
+### 8.2 Check for Existing Base Class
 
-### 8.3 Run Integration Tests
-
+Before writing integration tests, check if a `BaseIntegrationTest` class already exists:
 ```bash
-# Gradle — use the task configured in the project (commonly `integrationTest` or `intTest`)
-# Check build.gradle for the actual task name. If no separate task exists, integration tests
-# may run as part of `./gradlew test` with a tag or naming convention.
-./gradlew integrationTest --info 2>&1
-
-# Maven (if pom.xml)
-# mvn verify -Pfailsafe 2>&1
-# Or: mvn failsafe:integration-test 2>&1
+find src/integrationTest -name "BaseIntegrationTest.java" 2>/dev/null
 ```
 
-If the `integrationTest` task does not exist, check `build.gradle` for the correct task name or run `./gradlew tasks --group=verification` to discover available test tasks.
+If it exists, read it completely and extend it. **Do NOT create a new base class or modify the existing one.** If it does not exist, create one following the exact pattern in the `integration-testing` skill.
+
+### 8.3 Write Integration Tests
+
+If integration tests are needed:
+1. Create test class in `src/integrationTest/java/...integration/` following `{Feature}IntegrationTest` naming
+2. Extend `BaseIntegrationTest`
+3. **CRITICAL: Use raw JSON strings (text blocks) for request bodies** — do NOT use `ObjectMapper.writeValueAsString()` for DTOs with boolean primitives. See the `integration-testing` skill for details.
+4. Use `jsonPath()` with Hamcrest matchers for response verification
+5. For Lombok `boolean isPrimary` fields, use `$.primary` in jsonPath (Jackson strips "is" prefix)
+6. Write helper methods for creating prerequisite entities (clients, contacts, etc.)
+7. Test success paths, validation errors (400), not-found (404), and business rule violations (422)
+
+### 8.4 Run Integration Tests
+
+```bash
+# Gradle — run the integrationTest task
+./gradlew integrationTest --info 2>&1
+
+# If integrationTest task doesn't exist, check build.gradle or run:
+# ./gradlew tasks --group=verification
+```
 
 Apply the same fix-and-retry logic as unit tests (max 3 cycles).
 
