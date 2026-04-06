@@ -1,0 +1,8 @@
+{
+  "name": "troubleshoot-deployment",
+  "description": "Autonomously diagnose Kubernetes deployment failures — read-only analysis with structured root cause identification and post-mortem generation",
+  "version": "1.0.0",
+  "author": {
+    "name": "Enterprise CMS Team"
+  }
+}
