@@ -324,13 +324,18 @@ Produce a post-mortem report following the template in the `post-mortem` skill. 
 3. **Timeline** — Sequence of events from deployment to detection
 4. **Root Cause** — Detailed technical explanation
 5. **Evidence** — Key kubectl outputs that confirmed the diagnosis
-6. **Resolution** — Specific steps to fix the issue
+6. **Resolution** — Specific steps to fix the issue (with exact commands)
 7. **Prevention** — How to prevent this class of issue in the future
 8. **Lessons Learned** — What this incident teaches about the deployment process
 
-### 11.2 Format
+### 11.2 Save to File
 
-Output the post-mortem in a clean, professional markdown format suitable for sharing with a team.
+Save the post-mortem as a markdown file at:
+```
+postmortems/YYYY-MM-DD-<service>-<short-description>.md
+```
+
+Create the `postmortems/` directory if it does not exist. Use today's date. The saved file IS the deliverable of this diagnostic run — always confirm the file path in the output.
 
 ---
 
@@ -339,8 +344,8 @@ Output the post-mortem in a clean, professional markdown format suitable for sha
 When complete, present:
 
 1. **Cluster Health Summary** — Table of all resources with status
-2. **Diagnosis** — For each unhealthy resource: root cause, evidence, recommended fix
-3. **Post-Mortem** — Full incident report (if root cause was found)
+2. **Diagnosis** — For each unhealthy resource: root cause, evidence, immediate action with exact commands and verification checklist
+3. **Post-Mortem** — Saved to `postmortems/` directory as a markdown file (if root cause was found). Confirm the file path.
 4. **Next Steps** — Prioritized list of actions to resolve the issues
 
 ---

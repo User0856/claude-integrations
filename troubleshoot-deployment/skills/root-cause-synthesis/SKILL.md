@@ -85,8 +85,34 @@ Always use this format:
 ### Impact
 <what is broken as a result>
 
-### Recommended Fix
-<exact change needed — file, field, old value → new value>
+### Immediate Action
+
+#### What to change
+<exact resource, field, current value → correct value>
+
+#### Source file to fix
+<path to the Kustomize overlay or base manifest that introduced the bad value, e.g. `k8s/overlays/scenario-wrong-db-uri/patch-client-configmap.yaml`>
+
+#### Commands to apply the fix
+```bash
+# Step 1: Edit the source manifest (fix the root cause)
+<exact kubectl edit or file edit instruction>
+
+# Step 2: Apply the corrected manifest
+kubectl apply -k <overlay-path>
+
+# Step 3: Restart the affected deployment
+kubectl rollout restart deployment/<name> -n <namespace>
+
+# Step 4: Verify recovery
+kubectl get pods -n <namespace> -l app=<service> -w
+# Expected: pod reaches 1/1 Ready within 60-90 seconds
+```
+
+#### Verification checklist
+- [ ] Pod status transitions from <bad state> to Running 1/1 Ready
+- [ ] `kubectl get endpoints -n <namespace> <service>` shows pod IP
+- [ ] `kubectl logs <pod> -n <namespace>` shows clean startup with no errors
 ```
 
 ### RC07: If No Root Cause Found

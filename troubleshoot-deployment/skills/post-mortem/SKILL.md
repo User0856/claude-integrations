@@ -92,6 +92,23 @@ Lessons learned should identify what could have caught this earlier:
 
 Write as if presenting to an engineering team during an incident review. Be factual, specific, and non-blaming. Focus on systemic improvements, not individual errors.
 
+### PM10: Save Post-Mortem to File
+
+The post-mortem MUST be saved as a markdown file, not just printed to the console. Save it to:
+
+```
+postmortems/YYYY-MM-DD-<service>-<short-description>.md
+```
+
+Create the `postmortems/` directory in the project root if it does not exist.
+
+Examples:
+- `postmortems/2026-04-09-client-service-wrong-mongodb-uri.md`
+- `postmortems/2026-04-09-billing-service-oomkilled.md`
+- `postmortems/2026-04-09-contract-service-wrong-probe-path.md`
+
+Use the current date. The file must contain the complete post-mortem — it is the deliverable of this diagnostic run.
+
 ---
 
 ## Common Pitfalls

@@ -41,11 +41,35 @@ The correct hostname is `mongodb` (matching the MongoDB Kubernetes Service name)
 - All client API endpoints (/api/v1/clients/**) are unreachable — service endpoints are empty
 - The pod is alive and liveness probe passes, so it is NOT being restarted
 
-### Recommended Fix
-Update ConfigMap `client-service-config`:
-- Change: `SPRING_MONGODB_URI=mongodb://mongo-primary:27017/cms-clients`
-- To:     `SPRING_MONGODB_URI=mongodb://mongodb:27017/cms-clients`
-Then restart the deployment: `kubectl rollout restart deployment/client-service -n cms`
+### Immediate Action
+
+#### What to change
+ConfigMap `client-service-config`, field `SPRING_MONGODB_URI`:
+- Current: `mongodb://mongo-primary:27017/cms-clients`
+- Correct: `mongodb://mongodb:27017/cms-clients`
+
+#### Source file to fix
+`k8s/overlays/scenario-wrong-db-uri/patch-client-configmap.yaml` — this overlay patches the base ConfigMap with the wrong hostname.
+
+#### Commands to apply the fix
+```bash
+# Step 1: Fix the ConfigMap directly
+kubectl edit configmap client-service-config -n cms
+# Change SPRING_MONGODB_URI from mongodb://mongo-primary:27017/cms-clients
+# to mongodb://mongodb:27017/cms-clients
+
+# Step 2: Restart the deployment to pick up new config
+kubectl rollout restart deployment/client-service -n cms
+
+# Step 3: Verify recovery
+kubectl get pods -n cms -l app=client-service -w
+# Expected: pod reaches 1/1 Ready within 60-90 seconds
+```
+
+#### Verification checklist
+- [ ] Pod status transitions from Running 0/1 Ready to Running 1/1 Ready
+- [ ] `kubectl get endpoints -n cms client-service` shows pod IP on port 8081
+- [ ] `kubectl logs -l app=client-service -n cms` shows clean startup with successful MongoDB connection
 ```
 
 ---
@@ -89,11 +113,34 @@ The container is killed by the kernel OOM killer during startup before the appli
 - billing-service is completely unavailable (0/1 replicas ready)
 - All billing API endpoints return 503
 
-### Recommended Fix
-Increase billing-service memory allocation in the Deployment:
-- Change requests.memory: `32Mi` → `256Mi`
-- Change limits.memory: `48Mi` → `512Mi`
-Then restart: `kubectl rollout restart deployment/billing-service -n cms`
+### Immediate Action
+
+#### What to change
+Deployment `billing-service`, container resource limits:
+- Current: `requests.memory: 32Mi`, `limits.memory: 48Mi`
+- Correct: `requests.memory: 256Mi`, `limits.memory: 512Mi`
+
+#### Source file to fix
+`k8s/overlays/scenario-oom/patch-billing-deployment.yaml` — this overlay patches memory limits to 48Mi.
+
+#### Commands to apply the fix
+```bash
+# Step 1: Patch the deployment directly
+kubectl patch deployment billing-service -n cms --type=json \
+  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"512Mi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"256Mi"}]'
+
+# Step 2: Wait for new pod to roll out
+kubectl rollout status deployment/billing-service -n cms --timeout=120s
+
+# Step 3: Verify recovery
+kubectl get pods -n cms -l app=billing-service -w
+# Expected: pod reaches 1/1 Ready within 60-90 seconds
+```
+
+#### Verification checklist
+- [ ] Pod status transitions from CrashLoopBackOff to Running 1/1 Ready
+- [ ] `kubectl describe pod -l app=billing-service -n cms` shows no OOMKilled in last state
+- [ ] `kubectl logs -l app=billing-service -n cms` shows full Spring Boot startup completing
 ```
 
 ---
@@ -137,9 +184,32 @@ health checks at `/actuator/health`. The path `/health/ready` does not exist, re
 - Service endpoints list is empty — clients get connection refused
 - All contract API endpoints (/api/v1/contracts/**) are unreachable
 
-### Recommended Fix
-Change the readiness probe path in the contract-service Deployment:
-- Change: `readinessProbe.httpGet.path: /health/ready`
-- To:     `readinessProbe.httpGet.path: /actuator/health`
-Then restart: `kubectl rollout restart deployment/contract-service -n cms`
+### Immediate Action
+
+#### What to change
+Deployment `contract-service`, readiness probe path:
+- Current: `/health/ready`
+- Correct: `/actuator/health`
+
+#### Source file to fix
+`k8s/overlays/scenario-wrong-probe/patch-contract-deployment.yaml` — this overlay patches the readiness probe path.
+
+#### Commands to apply the fix
+```bash
+# Step 1: Patch the deployment directly
+kubectl patch deployment contract-service -n cms --type=json \
+  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/actuator/health"}]'
+
+# Step 2: Wait for new pod to roll out
+kubectl rollout status deployment/contract-service -n cms --timeout=120s
+
+# Step 3: Verify recovery
+kubectl get pods -n cms -l app=contract-service -w
+# Expected: pod reaches 1/1 Ready within 60-90 seconds
+```
+
+#### Verification checklist
+- [ ] Pod status transitions from Running 0/1 Ready to Running 1/1 Ready
+- [ ] `kubectl get endpoints -n cms contract-service` shows pod IP on port 8082
+- [ ] `kubectl describe pod -l app=contract-service -n cms` shows readiness probe succeeding
 ```
